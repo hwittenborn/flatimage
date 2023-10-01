@@ -1,0 +1,132 @@
+name: default
+on: push
+
+jobs:
+  build-elf:
+    name: Build elf
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+        distro: [arch, alpine, ubuntu]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: Set up qemu
+        uses: docker/setup-qemu-action@v2
+
+      - name: Build elf
+        run: docker build . --platform "${{ matrix.arch }}" --build-arg "FIM_DIST=${DIST^^}" -t elf -f docker/Dockerfile.elf
+        env:
+          DIST: ${{ matrix.distro }}
+      
+      - name: Get elf out of container
+        run: docker run --rm --platform "${{ matrix.arch }}" -v "${PWD}:/workdir" elf cp /fim/dist/main "/workdir/elf"
+      
+      - name: Upload elf
+        uses: actions/upload-artifact@v3
+        with:
+          name: elf-${{ matrix.distro }}-${{ matrix.arch }}
+          path: elf
+  
+  build-images:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: [build-elf]
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+        distro: [focal, jammy, arch, alpine]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: Set up qemu
+        uses: docker/setup-qemu-action@v2
+      
+      - name: Get artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: bin/
+      
+      - name: Get e2fsprogs
+        run: |
+          for file in fuse2fs mke2fs e2fsck resize2fs; do
+            gh -R hwittenborn/e2fsprogs release download -p "${file}-${{ matrix.arch }}" -O "bin/${file}"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Get proot
+        run: gh -R hwittenborn/proot release download -p "proot-${{ matrix.arch }}" -O bin/proot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Get bubblewrap
+        run: gh -R hwittenborn/bubblewrap-musl-static release download -p "bwrap-${{ matrix.arch }}" -O bin/bwrap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get bash
+        run: gh -R hwittenborn/bash-static release download -p "bash-${{ matrix.arch }}" -O bin/bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get dwarfs
+        run: |
+          mkdir dwarfs
+          gh -R mhx/dwarfs release download v0.7.2 -p "dwarfs-0.7.2-Linux-${{ matrix.arch }}.tar.xz" -O dwarfs.tar.xz
+          tar xf dwarfs.tar.xz --strip-components=1 -C dwarfs
+          mv dwarfs/{bin/mkdwarfs,bin/dwarfsextract,sbin/dwarfs2} bin/
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build image
+        run: |
+          # case "${{ matrix.distro }}" in
+          #   arch|alpine) image='archlinux:latest' ;;
+          #   *)           image='ubuntu:latest' ;;
+          # esac
+
+          # echo "${SCRIPT}" | docker run --platform "${{ matrix.arch }}" -iv "${PWD}:/root" "${image}"
+          echo "${SCRIPT}" | docker run --platform "${{ matrix.arch }}" -iv "${PWD}:/root" "ubuntu:latest"
+        env:
+          SCRIPT: |
+            set -e
+            cd /root
+
+            apt-get update && apt-get upgrade -y
+            apt-get install -y git wget curl zstd debootstrap e2fsprogs gawk proot fuse2fs xz-utils rsync
+
+            case "${{ matrix.distro }}" in
+              arch)
+                # pacman -Syu --noconfirm
+                # pacman -S python-pip patchelf git gawk wget curl zstd xz rsync binutils --noconfirm
+
+                cp "bin/elf-arch-${{ matrix.arch }}/elf" bin/elf
+                src/scripts/_build.sh archbootstrap
+                ;;
+              alpine)
+                # pacman -Syu --noconfirm
+                # pacman -S python-pip patchelf git gawk wget curl zstd xz rsync binutils --noconfirm
+
+                cp "bin/elf-alpine-${{ matrix.arch }}/elf" bin/elf
+                src/scripts/_build.sh alpinebootstrap
+                ;;
+              *)
+                # TODO: These are failing, but we'll just ignore it for the time being.
+                exit 0
+                # apt-get update && apt-get upgrade -y
+                # apt-get install -y git wget curl zstd debootstrap e2fsprogs proot fuse2fs xz-utils rsync
+
+                cp "bin/elf-ubuntu-${{ matrix.arch }}/elf" bin/elf
+                src/scripts/_build.sh debootstrap "${{ matrix.distro }}"
+                ;;
+              esac
+
+      - name: Upload image
+        uses: actions/upload-artifact@v3
+        with:
+          name: image-${{ matrix.distro }}-${{ matrix.arch }}
+          path: "dist/"

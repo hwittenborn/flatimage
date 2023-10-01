@@ -145,21 +145,22 @@ build-elf:
     reports:
       dotenv: build.env
 
-package-focal:
+package-ubuntu:
   stage: package
+  parallel:
+    matrix:
+      - DISTRO: [focal, jammy]
   before_script:
     - apt update && apt -y upgrade
     - apt install -y git wget curl zstd debootstrap e2fsprogs proot fuse2fs xz-utils rsync
-    - echo JOB_ID_BUILD_BS_FOCAL=$CI_JOB_ID > build.env
+    - echo "JOB_ID_BUILD_BS_$DISTRO=$CI_JOB_ID" > build.env
   script:
-    # Set dist
-    - dist="focal"
     # Select elf
     - cp ./bin/elf-ubuntu ./bin/elf
     # Build
-    - ./src/scripts/_build.sh debootstrap "$dist"
+    - ./src/scripts/_build.sh debootstrap "$DISTRO"
     # Set env vars
-    - echo "FOCAL_TARBALL=${dist}.tar.xz" >> build.env
+    - echo "${DISTRO^^}_TARBALL=${DISTRO}.tar.xz" >> build.env
   needs:
     - job: build-elf
     - job: fetch-e2fsprogs
@@ -235,10 +236,11 @@ upload:
   script: |
     curl --header "PRIVATE-TOKEN: $PRIVATE_TOKEN" --upload-file "dist/${ALPINE_TARBALL}" "${PACKAGE_REGISTRY_URL}/${ALPINE_TARBALL}"
     curl --header "PRIVATE-TOKEN: $PRIVATE_TOKEN" --upload-file "dist/${FOCAL_TARBALL}" "${PACKAGE_REGISTRY_URL}/${FOCAL_TARBALL}"
+    curl --header "PRIVATE-TOKEN: $PRIVATE_TOKEN" --upload-file "dist/${JAMMY_TARBALL}" "${PACKAGE_REGISTRY_URL}/${JAMMY_TARBALL}"
     curl --header "PRIVATE-TOKEN: $PRIVATE_TOKEN" --upload-file "dist/${ARCH_TARBALL}" "${PACKAGE_REGISTRY_URL}/${ARCH_TARBALL}"
   needs:
     - job: package-arch
-    - job: package-focal
+    - job: package-ubuntu
     - job: package-alpine
 
 deploy:
@@ -259,6 +261,8 @@ deploy:
       links:
         - name: 'focal.tar.xz'
           url: '${PACKAGE_REGISTRY_URL}/focal.tar.xz'
+        - name: 'jammy.tar.xz'
+          url: '${PACKAGE_REGISTRY_URL}/jammy.tar.xz'
         - name: 'arch.tar.xz'
           url: '${PACKAGE_REGISTRY_URL}/arch.tar.xz'
         - name: 'alpine.tar.xz'
